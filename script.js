@@ -14,22 +14,36 @@ const streets = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{y}/{x}.png'
   { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' });
 L.control.layers({ 'Satellite': satellite, 'Streets': streets }, null, { position: 'topright' }).addTo(map);
 
-// Invalidate size once DOM is loaded to ensure 100% full container fill
-setTimeout(() => map.invalidateSize(), 200);
+setTimeout(() => map.invalidateSize(), 300);
 
 // ---------- State ----------
 const $ = id => document.getElementById(id);
-const COLORS = { ip: '#2f7de1', gps: '#ff7a1a', manual: '#2e9e5b', friend: '#e02424' };
-const LABELS = { ip: 'IP location', gps: 'Device GPS', manual: 'Entered/Pinned position', friend: 'Friend\'s Live Device' };
+const COLORS = {
+  ip: '#2f7de1',
+  gps: '#ff7a1a',
+  manual: '#2e9e5b',
+  friend: '#e02424',
+  'friend-1': '#e02424',
+  'friend-2': '#9333ea',
+  'friend-3': '#d97706',
+  'friend-4': '#0284c7'
+};
+const LABELS = {
+  ip: 'IP location',
+  gps: 'Device GPS',
+  manual: 'Entered/Pinned position',
+  friend: 'Friend\'s Live Device'
+};
 const SHORT = { ip: 'IP', gps: 'GPS', manual: 'Pinned', friend: 'Friend' };
 const points = {};          // kind -> { marker, circle, lat, lng }
-let watchId = null, trail = null, friendTrail = null, gpsWarmupTimeout = null;
+let watchId = null, trail = null, friendTrails = {}, gpsWarmupTimeout = null;
 const queryEl = $('query');
 
-// Realtime Relay (HTTPS/SSE) State
+// Realtime Relay State
 let eventSource = null;
 let currentTrackingChannel = null;
 let isBroadcasting = false;
+let myDeviceId = 'dev_' + Math.random().toString(36).substring(2, 7);
 
 const IP_NOTE = 'An IP address shows where your internet provider\'s network exchange is registered, not where the phone or person is. For true physical precision, use device GPS.';
 const GPS_NOTE = 'Precise position obtained from device GPS / hardware sensors with real-time accuracy margin.';
@@ -38,8 +52,10 @@ const FRIEND_NOTE = 'Live telemetric stream received directly from friend\'s dev
 
 function setStatus(msg, type = '') {
   const el = $('status');
-  el.textContent = msg || '';
-  el.className = type;
+  if (el) {
+    el.textContent = msg || '';
+    el.className = type;
+  }
 }
 
 function pinIcon(color) {
@@ -61,7 +77,7 @@ function formatDistance(km) {
   return km < 1 ? Math.round(km * 1000) + ' m' : km.toFixed(km < 10 ? 1 : 0) + ' km';
 }
 
-// ---------- Reverse geocoding (OpenStreetMap Nominatim, free) ----------
+// ---------- Reverse geocoding ----------
 async function reverseGeocode(lat, lng) {
   try {
     const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=16&addressdetails=1`, {
@@ -83,15 +99,16 @@ function plot(kind, lat, lng, radius, opts = {}) {
     p.circle.setLatLng([lat, lng]).setRadius(radius);
     p.lat = lat; p.lng = lng;
   } else {
-    const color = COLORS[kind];
+    const color = COLORS[kind] || '#e02424';
+    const label = LABELS[kind] || 'Friend Device';
     const marker = L.marker([lat, lng], {
-      icon: pinIcon(color), draggable: kind === 'manual', title: LABELS[kind]
+      icon: pinIcon(color), draggable: kind === 'manual', title: label
     }).addTo(map);
     const circle = L.circle([lat, lng], {
       radius, color, weight: 2, fillColor: color, fillOpacity: 0.15,
       dashArray: kind === 'ip' ? '6, 6' : null
     }).addTo(map);
-    marker.bindTooltip(LABELS[kind]);
+    marker.bindTooltip(label);
     if (kind === 'manual') {
       marker.on('dragend', async () => {
         const ll = marker.getLatLng();
@@ -120,7 +137,7 @@ function fitAll() {
 function showDetails(kind, rows, note) {
   const p = points[kind];
   if (!p) return;
-  $('resultTitle').textContent = LABELS[kind];
+  $('resultTitle').textContent = LABELS[kind] || 'Device Details';
   const dl = $('details'); dl.innerHTML = '';
   rows.concat([['Coordinates', p.lat.toFixed(5) + ', ' + p.lng.toFixed(5)]]).forEach(([k, v]) => {
     const dt = document.createElement('dt'); dt.textContent = k;
@@ -139,25 +156,23 @@ function refreshSummary() {
   const legend = $('legend'); legend.innerHTML = '';
   kinds.forEach(k => {
     const li = document.createElement('li');
-    const dot = document.createElement('span'); dot.className = 'dot'; dot.style.background = COLORS[k];
+    const dot = document.createElement('span'); dot.className = 'dot'; dot.style.background = COLORS[k] || '#e02424';
     const txt = document.createElement('span');
-    txt.textContent = LABELS[k] + ': ' + points[k].lat.toFixed(4) + ', ' + points[k].lng.toFixed(4);
+    txt.textContent = (LABELS[k] || k) + ': ' + points[k].lat.toFixed(4) + ', ' + points[k].lng.toFixed(4);
     li.append(dot, txt); legend.appendChild(li);
   });
 
   const dist = $('distances'); dist.innerHTML = '';
-  const pairs = [['ip', 'gps'], ['ip', 'manual'], ['gps', 'manual'], ['gps', 'friend'], ['ip', 'friend']];
-  pairs.forEach(([a, b]) => {
-    if (points[a] && points[b]) {
-      const li = document.createElement('li');
-      li.textContent = SHORT[a] + ' and ' + SHORT[b] + ' are ' + formatDistance(distanceKm(points[a], points[b])) + ' apart';
-      dist.appendChild(li);
-    }
-  });
+  const firstFriend = kinds.find(k => k.startsWith('friend'));
+  if (firstFriend && points.gps) {
+    const li = document.createElement('li');
+    li.textContent = 'You and ' + (LABELS[firstFriend] || 'Friend') + ' are ' + formatDistance(distanceKm(points.gps, points[firstFriend])) + ' apart';
+    dist.appendChild(li);
+  }
 
   let msg = '';
-  if (points.friend && points.gps) {
-    msg = 'Tracking your friend live! Distance between you and your friend: ' + formatDistance(distanceKm(points.gps, points.friend)) + '.';
+  if (firstFriend && points.gps) {
+    msg = 'Tracking active device(s) live!';
   } else if (points.ip && points.gps) {
     const d = distanceKm(points.ip, points.gps);
     msg = d > 20
@@ -167,7 +182,7 @@ function refreshSummary() {
   $('compareNote').textContent = msg;
 }
 
-// ---------- Input parsing with support for Degrees/Minutes & Cardinal directions ----------
+// ---------- Input parsing ----------
 const ipv4Re = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 const ipv6Re = /^[0-9a-f:]+$/i;
 
@@ -200,7 +215,7 @@ function isPrivateIp(ip) {
          (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127) || a === 0;
 }
 
-// ---------- Entered or pinned coordinates ----------
+// ---------- Manual / IP Geolocation ----------
 async function setManual(lat, lng, source) {
   if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
     setStatus('Coordinates out of range. Latitude (-90 to 90) and Longitude (-180 to 180).', 'error');
@@ -216,7 +231,6 @@ async function setManual(lat, lng, source) {
   }
 }
 
-// ---------- IP lookup with fallback (ipwho.is -> freeipapi.com) ----------
 async function locateByIp(ip) {
   if (ip && isPrivateIp(ip)) {
     setStatus('Private / CGNAT IP address detected. These are local to your provider and cannot be geolocated publicly.', 'error');
@@ -258,7 +272,7 @@ async function locateByIp(ip) {
   }
 }
 
-// ---------- Device GPS with sensor warm-up for maximum accuracy ----------
+// ---------- Device GPS with sensor warm-up ----------
 function gpsRows(pos, placeName) {
   const c = pos.coords;
   const rows = [
@@ -287,20 +301,23 @@ function stopFollowing() {
   }
 }
 
-// Function to broadcast location to the tracking channel
+// Broadcasts GPS coordinate packets to the cloud relay
 async function broadcastLocation(lat, lng, accuracy, speed) {
   if (!currentTrackingChannel) return;
   try {
+    const payload = JSON.stringify({
+      type: 'location',
+      deviceId: myDeviceId,
+      lat,
+      lng,
+      accuracy,
+      speed,
+      timestamp: Date.now()
+    });
+    // Use plain POST with text body so CORS is always allowed on any mobile browser
     await fetch(`https://ntfy.sh/${currentTrackingChannel}`, {
       method: 'POST',
-      body: JSON.stringify({
-        type: 'location',
-        lat,
-        lng,
-        accuracy,
-        speed,
-        timestamp: Date.now()
-      })
+      body: payload
     });
   } catch (err) {
     console.error('Relay broadcast error:', err);
@@ -328,7 +345,7 @@ function locateByGps() {
     gpsBtn.classList.add('btn-active');
     gpsBtn.textContent = isFollowing ? 'Stop live tracking' : 'Locking GPS…';
   }
-  setStatus('Contacting GPS & satellite sensors… allow permission if prompted.', 'loading');
+  setStatus('Contacting GPS sensors… allow permission if prompted.', 'loading');
 
   const opts = { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 };
 
@@ -346,7 +363,7 @@ function locateByGps() {
   let bestAccuracy = Infinity;
   let sampleCount = 0;
 
-  if (isFollowing) {
+  if (isFollowing || isBroadcasting) {
     let first = true;
     watchId = navigator.geolocation.watchPosition(async pos => {
       const { latitude: lat, longitude: lng, accuracy } = pos.coords;
@@ -356,7 +373,6 @@ function locateByGps() {
       if (!trail) trail = L.polyline([], { color: COLORS.gps, weight: 4 }).addTo(map);
       trail.addLatLng([lat, lng]);
 
-      // Broadcast to cloud relay if actively tracking
       if (currentTrackingChannel) {
         broadcastLocation(lat, lng, accuracy, pos.coords.speed);
       }
@@ -365,11 +381,11 @@ function locateByGps() {
         map.setView([lat, lng], 17);
         first = false;
       }
-      setStatus(`Following live (accuracy: ±${Math.round(accuracy)}m). Tap "Stop live tracking" to end.`, 'success');
+      setStatus(`Broadcasting GPS live (±${Math.round(accuracy)}m).`, 'success');
     }, onError, opts);
 
   } else {
-    setStatus('Refining GPS satellite fix for highest precision…', 'loading');
+    setStatus('Refining GPS satellite fix…', 'loading');
     let lastBestPos = null;
 
     watchId = navigator.geolocation.watchPosition(async pos => {
@@ -383,7 +399,6 @@ function locateByGps() {
         showDetails('gps', gpsRows(pos), GPS_NOTE);
       }
 
-      // Broadcast update
       if (currentTrackingChannel) {
         broadcastLocation(lat, lng, accuracy, pos.coords.speed);
       }
@@ -417,9 +432,47 @@ async function finishGpsCalibration(pos) {
   showDetails('gps', gpsRows(pos, address), GPS_NOTE);
 }
 
-// ---------- High-Reliability Cloud HTTPS/SSE Relay (Option 2) ----------
+// ---------- High-Reliability Cloud HTTPS/SSE Relay (Multi-Friend Support) ----------
+function handleIncomingPacket(data) {
+  if (!data || data.type !== 'location') return;
+  const { lat, lng, accuracy, deviceId } = data;
+  
+  // Assign a distinct slot/color for each friend device
+  const friendKey = deviceId ? 'friend-' + deviceId : 'friend';
+  if (!LABELS[friendKey]) {
+    LABELS[friendKey] = 'Friend (' + (deviceId || '1') + ')';
+    COLORS[friendKey] = COLORS[friendKey] || '#e02424';
+  }
+
+  // Auto-plot/update friend pin
+  plot(friendKey, lat, lng, Math.max(accuracy || 10, 8));
+
+  // Trace trail per friend
+  if (!friendTrails[friendKey]) {
+    friendTrails[friendKey] = L.polyline([], { color: COLORS[friendKey], weight: 4 }).addTo(map);
+  }
+  friendTrails[friendKey].addLatLng([lat, lng]);
+
+  const peerStatusEl = $('peerStatus');
+  if (peerStatusEl) {
+    peerStatusEl.textContent = `✅ Live friend position received! (Accuracy: ±${Math.round(accuracy || 10)}m)`;
+    peerStatusEl.style.background = '#eef7f4';
+    peerStatusEl.style.color = '#0d5a4d';
+  }
+
+  const rows = [
+    ['Device', LABELS[friendKey]],
+    ['Accuracy', '± ' + Math.round(accuracy || 10) + ' m'],
+    ['Speed', data.speed != null ? (data.speed * 3.6).toFixed(1) + ' km/h' : 'Stationary / N/A'],
+    ['Last Update', new Date(data.timestamp || Date.now()).toLocaleTimeString()]
+  ];
+  showDetails(friendKey, rows, FRIEND_NOTE);
+
+  // Invalidate map to make sure viewport updates instantly in PWA
+  map.invalidateSize();
+}
+
 function initRealtimeHost() {
-  // Generate a distinct channel topic
   const channel = 'tracker_' + Math.random().toString(36).substring(2, 10);
   currentTrackingChannel = channel;
 
@@ -430,46 +483,21 @@ function initRealtimeHost() {
   $('startSession').style.display = 'none';
   $('peerStatus').textContent = 'Waiting for your friend to open the link on their phone…';
 
-  // Close previous stream if open
   if (eventSource) eventSource.close();
 
-  // Connect to SSE stream
+  // Connect via SSE
   eventSource = new EventSource(`https://ntfy.sh/${channel}/sse`);
 
   eventSource.onopen = () => {
     $('peerStatus').textContent = '📡 Tracking channel live. Send the link to your friend!';
   };
 
-  eventSource.onmessage = async event => {
+  eventSource.onmessage = event => {
     try {
       const envelope = JSON.parse(event.data);
       if (envelope.event !== 'message' || !envelope.message) return;
-      
       const data = JSON.parse(envelope.message);
-      if (data.type === 'location') {
-        const { lat, lng, accuracy } = data;
-
-        // Auto reload/update map with Friend's pin!
-        plot('friend', lat, lng, Math.max(accuracy || 10, 8));
-
-        if (!friendTrail) friendTrail = L.polyline([], { color: COLORS.friend, weight: 4 }).addTo(map);
-        friendTrail.addLatLng([lat, lng]);
-
-        $('peerStatus').textContent = `✅ Live friend position received! (Accuracy: ±${Math.round(accuracy || 10)}m)`;
-        $('peerStatus').style.background = '#eef7f4';
-        $('peerStatus').style.color = '#0d5a4d';
-
-        const rows = [
-          ['Device', 'Friend\'s Live Phone'],
-          ['Accuracy', '± ' + Math.round(accuracy || 10) + ' m'],
-          ['Speed', data.speed != null ? (data.speed * 3.6).toFixed(1) + ' km/h' : 'Stationary / N/A'],
-          ['Last Update', new Date(data.timestamp || Date.now()).toLocaleTimeString()]
-        ];
-        showDetails('friend', rows, FRIEND_NOTE);
-
-        // Center map to friend's position
-        map.setView([lat, lng], 16);
-      }
+      handleIncomingPacket(data);
     } catch (e) {
       console.log('Ignored non-json ping:', e);
     }
@@ -492,7 +520,6 @@ function initRealtimeClient(channelId) {
     <div id="clientStatus" class="pulse-status" style="margin-top:8px;">Ready to stream location.</div>
   `;
 
-  // Pre-load map immediately
   setTimeout(() => map.invalidateSize(), 300);
 
   const sendBtn = $('sendGpsBtn');
@@ -507,6 +534,13 @@ function initRealtimeClient(channelId) {
     $('clientStatus').style.color = '#0d5a4d';
 
     locateByGps();
+
+    // Auto-broadcast heartbeat interval to ensure consistent updates
+    setInterval(() => {
+      if (points.gps) {
+        broadcastLocation(points.gps.lat, points.gps.lng, 10, 0);
+      }
+    }, 4000);
   });
 }
 
@@ -530,7 +564,10 @@ $('waSessionBtn').addEventListener('click', () => {
 });
 
 // ---------- Share & External Map Handlers ----------
-function bestPoint() { return points.friend || points.gps || points.manual || points.ip; }
+function bestPoint() {
+  const firstFriend = Object.keys(points).find(k => k.startsWith('friend'));
+  return points[firstFriend] || points.gps || points.manual || points.ip;
+}
 
 function shareUrl() {
   const p = bestPoint();
@@ -568,7 +605,10 @@ $('wa').addEventListener('click', () => {
 function clearAll() {
   stopFollowing();
   if (trail) { map.removeLayer(trail); trail = null; }
-  if (friendTrail) { map.removeLayer(friendTrail); friendTrail = null; }
+  Object.keys(friendTrails).forEach(k => {
+    map.removeLayer(friendTrails[k]);
+  });
+  friendTrails = {};
   Object.keys(points).forEach(k => {
     map.removeLayer(points[k].marker); map.removeLayer(points[k].circle); delete points[k];
   });
@@ -626,14 +666,12 @@ async function requestWakeLock() {
   }
 }
 
-// Re-acquire wake lock if tab is brought back from background
 document.addEventListener('visibilitychange', async () => {
   if (wakeLock !== null && document.visibilityState === 'visible') {
     await requestWakeLock();
   }
 });
 
-// Register PWA Service Worker
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js').catch(err => {
@@ -642,7 +680,6 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-// PWA Install Prompt Handler
 let deferredPrompt = null;
 window.addEventListener('beforeinstallprompt', e => {
   e.preventDefault();
@@ -661,8 +698,6 @@ window.addEventListener('beforeinstallprompt', e => {
 
 (function handleUrlParams() {
   const params = new URLSearchParams(location.search);
-  
-  // If user opened with a ?join=CHANNEL parameter, they are the friend streaming GPS
   const joinChannel = params.get('join');
   if (joinChannel) {
     initRealtimeClient(joinChannel);
@@ -670,7 +705,6 @@ window.addEventListener('beforeinstallprompt', e => {
     return;
   }
 
-  // If opened with static lat/lng coordinates
   const lat = parseFloat(params.get('lat')), lng = parseFloat(params.get('lng'));
   if (!isNaN(lat) && !isNaN(lng)) {
     setManual(lat, lng, 'Shared link');
