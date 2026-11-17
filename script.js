@@ -16,6 +16,9 @@ L.control.layers({ 'Satellite': satellite, 'Streets': streets }, null, { positio
 
 setTimeout(() => map.invalidateSize(), 300);
 
+// ---------- Firebase Realtime Database Configuration ----------
+const FIREBASE_DB_URL = 'https://devicetracker-ee6cf-default-rtdb.firebaseio.com';
+
 // ---------- State ----------
 const $ = id => document.getElementById(id);
 const COLORS = {
@@ -39,8 +42,8 @@ const points = {};          // kind -> { marker, circle, lat, lng }
 let watchId = null, trail = null, friendTrails = {}, gpsWarmupTimeout = null;
 const queryEl = $('query');
 
-// Realtime Relay State
-let eventSource = null;
+// Realtime Tracking State
+let pollInterval = null;
 let currentTrackingChannel = null;
 let isBroadcasting = false;
 let myDeviceId = 'dev_' + Math.random().toString(36).substring(2, 7);
@@ -48,7 +51,7 @@ let myDeviceId = 'dev_' + Math.random().toString(36).substring(2, 7);
 const IP_NOTE = 'An IP address shows where your internet provider\'s network exchange is registered, not where the phone or person is. For true physical precision, use device GPS.';
 const GPS_NOTE = 'Precise position obtained from device GPS / hardware sensors with real-time accuracy margin.';
 const MANUAL_NOTE = 'Position you entered or pinned. Drag the pin to adjust it.';
-const FRIEND_NOTE = 'Live telemetric stream received directly from friend\'s device via Cloud Relay.';
+const FRIEND_NOTE = 'Live stream received directly from friend\'s device via Firebase Realtime Cloud.';
 
 function setStatus(msg, type = '') {
   const el = $('status');
@@ -301,26 +304,25 @@ function stopFollowing() {
   }
 }
 
-// Broadcasts GPS coordinate packets to the cloud relay
+// Broadcasts GPS coordinate packets to Firebase Realtime Database
 async function broadcastLocation(lat, lng, accuracy, speed) {
   if (!currentTrackingChannel) return;
   try {
-    const payload = JSON.stringify({
-      type: 'location',
+    const payload = {
       deviceId: myDeviceId,
       lat,
       lng,
       accuracy,
-      speed,
+      speed: speed || 0,
       timestamp: Date.now()
-    });
-    // Use plain POST with text body so CORS is always allowed on any mobile browser
-    await fetch(`https://ntfy.sh/${currentTrackingChannel}`, {
-      method: 'POST',
-      body: payload
+    };
+    await fetch(`${FIREBASE_DB_URL}/sessions/${currentTrackingChannel}/${myDeviceId}.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
     });
   } catch (err) {
-    console.error('Relay broadcast error:', err);
+    console.error('Firebase broadcast error:', err);
   }
 }
 
@@ -432,22 +434,22 @@ async function finishGpsCalibration(pos) {
   showDetails('gps', gpsRows(pos, address), GPS_NOTE);
 }
 
-// ---------- High-Reliability Cloud HTTPS/SSE Relay (Multi-Friend Support) ----------
-function handleIncomingPacket(data) {
-  if (!data || data.type !== 'location') return;
-  const { lat, lng, accuracy, deviceId } = data;
+// ---------- Firebase Realtime Tracking (Robust Fast Polling Sync) ----------
+function updateFriendPosition(deviceId, data) {
+  if (!data || !data.lat || !data.lng) return;
+  const { lat, lng, accuracy, speed, timestamp } = data;
   
-  // Assign a distinct slot/color for each friend device
-  const friendKey = deviceId ? 'friend-' + deviceId : 'friend';
+  const friendKey = 'friend-' + deviceId;
   if (!LABELS[friendKey]) {
-    LABELS[friendKey] = 'Friend (' + (deviceId || '1') + ')';
-    COLORS[friendKey] = COLORS[friendKey] || '#e02424';
+    const friendCount = Object.keys(points).filter(k => k.startsWith('friend-')).length + 1;
+    LABELS[friendKey] = 'Friend ' + friendCount;
+    COLORS[friendKey] = COLORS['friend-' + friendCount] || '#e02424';
   }
 
-  // Auto-plot/update friend pin
+  // Plot and update location immediately
   plot(friendKey, lat, lng, Math.max(accuracy || 10, 8));
 
-  // Trace trail per friend
+  // Trail
   if (!friendTrails[friendKey]) {
     friendTrails[friendKey] = L.polyline([], { color: COLORS[friendKey], weight: 4 }).addTo(map);
   }
@@ -455,7 +457,7 @@ function handleIncomingPacket(data) {
 
   const peerStatusEl = $('peerStatus');
   if (peerStatusEl) {
-    peerStatusEl.textContent = `✅ Live friend position received! (Accuracy: ±${Math.round(accuracy || 10)}m)`;
+    peerStatusEl.textContent = `✅ Live position from ${LABELS[friendKey]} (±${Math.round(accuracy || 10)}m)`;
     peerStatusEl.style.background = '#eef7f4';
     peerStatusEl.style.color = '#0d5a4d';
   }
@@ -463,17 +465,35 @@ function handleIncomingPacket(data) {
   const rows = [
     ['Device', LABELS[friendKey]],
     ['Accuracy', '± ' + Math.round(accuracy || 10) + ' m'],
-    ['Speed', data.speed != null ? (data.speed * 3.6).toFixed(1) + ' km/h' : 'Stationary / N/A'],
-    ['Last Update', new Date(data.timestamp || Date.now()).toLocaleTimeString()]
+    ['Speed', speed != null ? (speed * 3.6).toFixed(1) + ' km/h' : 'Stationary / N/A'],
+    ['Last Update', new Date(timestamp || Date.now()).toLocaleTimeString()]
   ];
   showDetails(friendKey, rows, FRIEND_NOTE);
-
-  // Invalidate map to make sure viewport updates instantly in PWA
   map.invalidateSize();
 }
 
+async function fetchSessionUpdates() {
+  if (!currentTrackingChannel) return;
+  try {
+    const res = await fetch(`${FIREBASE_DB_URL}/sessions/${currentTrackingChannel}.json`);
+    if (!res.ok) return;
+    const sessionData = await res.json();
+    if (!sessionData) return;
+
+    // Loop through each connected device in this session
+    Object.keys(sessionData).forEach(devId => {
+      // Don't track self if testing on same machine
+      if (devId !== myDeviceId) {
+        updateFriendPosition(devId, sessionData[devId]);
+      }
+    });
+  } catch (err) {
+    console.error('Firebase sync error:', err);
+  }
+}
+
 function initRealtimeHost() {
-  const channel = 'tracker_' + Math.random().toString(36).substring(2, 10);
+  const channel = 'trk_' + Math.random().toString(36).substring(2, 9);
   currentTrackingChannel = channel;
 
   const base = location.href.split('?')[0].split('#')[0];
@@ -483,29 +503,11 @@ function initRealtimeHost() {
   $('startSession').style.display = 'none';
   $('peerStatus').textContent = 'Waiting for your friend to open the link on their phone…';
 
-  if (eventSource) eventSource.close();
+  // Stop previous polling
+  if (pollInterval) clearInterval(pollInterval);
 
-  // Connect via SSE
-  eventSource = new EventSource(`https://ntfy.sh/${channel}/sse`);
-
-  eventSource.onopen = () => {
-    $('peerStatus').textContent = '📡 Tracking channel live. Send the link to your friend!';
-  };
-
-  eventSource.onmessage = event => {
-    try {
-      const envelope = JSON.parse(event.data);
-      if (envelope.event !== 'message' || !envelope.message) return;
-      const data = JSON.parse(envelope.message);
-      handleIncomingPacket(data);
-    } catch (e) {
-      console.log('Ignored non-json ping:', e);
-    }
-  };
-
-  eventSource.onerror = () => {
-    $('peerStatus').textContent = 'Reconnecting to cloud relay…';
-  };
+  // Poll Firebase every 1.5 seconds for instant real-time live refresh
+  pollInterval = setInterval(fetchSessionUpdates, 1500);
 }
 
 function initRealtimeClient(channelId) {
@@ -529,18 +531,18 @@ function initRealtimeClient(channelId) {
     sendBtn.style.opacity = '0.85';
     $('follow').checked = true;
 
-    $('clientStatus').textContent = 'Acquiring GPS fix and broadcasting to your friend…';
+    $('clientStatus').textContent = 'Connected to Firebase. Broadcasting coordinates…';
     $('clientStatus').style.background = '#eef7f4';
     $('clientStatus').style.color = '#0d5a4d';
 
     locateByGps();
 
-    // Auto-broadcast heartbeat interval to ensure consistent updates
+    // Heartbeat every 2.5 seconds directly to Firebase
     setInterval(() => {
       if (points.gps) {
-        broadcastLocation(points.gps.lat, points.gps.lng, 10, 0);
+        broadcastLocation(points.gps.lat, points.gps.lng, points.gps.circle.getRadius(), 0);
       }
-    }, 4000);
+    }, 2500);
   });
 }
 
@@ -565,7 +567,7 @@ $('waSessionBtn').addEventListener('click', () => {
 
 // ---------- Share & External Map Handlers ----------
 function bestPoint() {
-  const firstFriend = Object.keys(points).find(k => k.startsWith('friend'));
+  const firstFriend = Object.keys(points).find(k => k.startsWith('friend-'));
   return points[firstFriend] || points.gps || points.manual || points.ip;
 }
 
