@@ -610,7 +610,55 @@ map.on('click', async e => {
   setManual(e.latlng.lat, e.latlng.lng, 'Pinned on the map');
 });
 
-// ---------- URL Routing on Page Load ----------
+// ---------- URL Routing on Page Load & PWA / WakeLock Setup ----------
+let wakeLock = null;
+
+async function requestWakeLock() {
+  if ('wakeLock' in navigator) {
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => {
+        wakeLock = null;
+      });
+    } catch (err) {
+      console.log('Wake Lock request error:', err);
+    }
+  }
+}
+
+// Re-acquire wake lock if tab is brought back from background
+document.addEventListener('visibilitychange', async () => {
+  if (wakeLock !== null && document.visibilityState === 'visible') {
+    await requestWakeLock();
+  }
+});
+
+// Register PWA Service Worker
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(err => {
+      console.log('SW registration error:', err);
+    });
+  });
+}
+
+// PWA Install Prompt Handler
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredPrompt = e;
+  const installBtn = $('pwaInstallBtn');
+  if (installBtn) {
+    installBtn.style.display = 'inline-block';
+    installBtn.addEventListener('click', async () => {
+      installBtn.style.display = 'none';
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      deferredPrompt = null;
+    });
+  }
+});
+
 (function handleUrlParams() {
   const params = new URLSearchParams(location.search);
   
@@ -618,6 +666,7 @@ map.on('click', async e => {
   const joinChannel = params.get('join');
   if (joinChannel) {
     initRealtimeClient(joinChannel);
+    requestWakeLock();
     return;
   }
 
