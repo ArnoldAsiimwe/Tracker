@@ -1,0 +1,120 @@
+:root {
+  --ink: #17231f;
+  --muted: #5d6b65;
+  --panel: #f4f6f3;
+  --line: #d5dcd7;
+  --accent: #0f6b5c;
+  --accent-dark: #0a4f44;
+  --warn: #a4380f;
+  --info: #1b63bb;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+  color: var(--ink);
+  display: flex;
+}
+aside {
+  width: 380px;
+  flex: none;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  padding: 18px 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  z-index: 1000;
+  box-shadow: 2px 0 10px rgba(0,0,0,0.04);
+}
+.sidebar-header { margin-bottom: 2px; }
+h1 { font-size: 1.35rem; margin: 0; letter-spacing: -0.01em; color: var(--accent-dark); }
+h2 { font-size: .95rem; margin: 0 0 8px; }
+.sub { margin: 4px 0 0; color: var(--muted); font-size: .88rem; line-height: 1.4; }
+label { font-weight: 600; font-size: .88rem; display: block; margin-bottom: 5px; }
+.field-group { display: flex; flex-direction: column; }
+input[type=text] {
+  width: 100%; padding: 10px 12px; font-size: .95rem;
+  border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+input[type=text]:focus-visible, button:focus-visible {
+  outline: 3px solid #7cc4b6; outline-offset: 1px;
+}
+.hint { font-size: .78rem; color: var(--muted); margin: 5px 0 0; line-height: 1.35; }
+.row { display: flex; gap: 8px; }
+.share-actions { flex-wrap: wrap; }
+.share-actions button { min-width: calc(50% - 4px); flex: 1 1 auto; }
+button {
+  font: inherit; font-weight: 600; cursor: pointer; border-radius: 8px; padding: 10px 13px;
+  border: 1px solid var(--accent); background: var(--accent); color: #fff; flex: 1;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+button:hover:not(:disabled) { background: var(--accent-dark); }
+button.secondary { background: #fff; color: var(--accent); }
+button.secondary:hover:not(:disabled) { background: #e6f1ee; }
+button:disabled { opacity: 0.6; cursor: not-allowed; }
+.btn-active {
+  background: #c54215 !important;
+  border-color: #a4380f !important;
+  color: #fff !important;
+}
+.follow {
+  display: flex; align-items: center; gap: 8px; font-size: .85rem; font-weight: 500;
+  margin: 0; cursor: pointer; user-select: none;
+}
+#status {
+  min-height: 1.3em; font-size: .88rem; color: var(--muted); line-height: 1.45;
+  padding: 8px 10px; border-radius: 6px; background: rgba(0,0,0,0.02);
+  transition: all 0.2s ease;
+}
+#status.error {
+  color: var(--warn);
+  background: #fdf1ed;
+  border: 1px solid #fad2c3;
+  font-weight: 500;
+}
+#status.success {
+  color: #0d5a4d;
+  background: #eef7f4;
+  border: 1px solid #bce2d8;
+}
+#status.loading {
+  color: var(--info);
+  background: #edf4fc;
+  border: 1px solid #c9def7;
+}
+#result, #summary {
+  display: none; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 13px;
+}
+dl { margin: 0; display: grid; grid-template-columns: 90px 1fr; gap: 6px 10px; font-size: .88rem; }
+dt { color: var(--muted); }
+dd { margin: 0; font-weight: 600; word-break: break-word; }
+.note { margin: 10px 0 0; font-size: .8rem; color: var(--muted); line-height: 1.4; border-top: 1px dashed var(--line); padding-top: 8px; }
+ul { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: .86rem; }
+#legend li { display: flex; align-items: center; gap: 8px; }
+.dot { width: 12px; height: 12px; border-radius: 50%; flex: none; border: 2px solid #fff; box-shadow: 0 0 0 1px var(--line); }
+#distances li { font-weight: 600; }
+#summary .row { margin-top: 12px; }
+#summary button { padding: 8px 10px; font-size: .82rem; }
+#map { flex: 1; min-width: 0; height: 100%; cursor: crosshair; }
+.pin {
+  width: 22px; height: 22px; border-radius: 50% 50% 50% 0;
+  border: 3px solid #fff; transform: rotate(-45deg); box-shadow: 0 2px 6px rgba(0,0,0,.5);
+}
+
+@media (max-width: 760px) {
+  body { flex-direction: column-reverse; }
+  aside {
+    width: 100%;
+    height: 48%;
+    border-right: 0;
+    border-top: 2px solid var(--line);
+    padding: 14px;
+    gap: 10px;
+  }
+  #map { height: 52%; flex: none; width: 100%; }
+  .share-actions button { min-width: 100%; }
+}

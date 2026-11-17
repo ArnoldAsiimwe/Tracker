@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Device locator</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" integrity="sha512-Zcn6gRop8P1W+1FvWv+7c1uQj6YfO2G3qgYfJ7TzFv3B9FfD8H/fH0jZ0H0wR7l5F9v3hV4F3Bv3GfO==" crossorigin="">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<aside id="sidebar">
+  <div class="sidebar-header">
+    <h1>Device locator</h1>
+    <p class="sub">Locate a device by GPS, IP address or coordinates, and compare accuracy.</p>
+  </div>
+
+  <div class="row">
+    <button id="gps" type="button">Use my GPS</button>
+  </div>
+  <label class="follow" for="follow">
+    <input id="follow" type="checkbox"> Follow live (tracks movement & draws path)
+  </label>
+
+  <div class="field-group">
+    <label for="query">IP address or coordinates</label>
+    <input id="query" type="text" placeholder="e.g. 41.210.150.20 or -0.6072, 30.6545" autocomplete="off" spellcheck="false" aria-describedby="queryHint">
+    <p class="hint" id="queryHint">Leave empty for your current public IP. Supports decimals (-0.60, 30.65) or degrees (0°36'S 30°39'E), or click map to drop a pin.</p>
+  </div>
+
+  <div class="row">
+    <button id="go" type="button" class="secondary">Locate</button>
+    <button id="clear" type="button" class="secondary">Clear map</button>
+  </div>
+
+  <div id="status" role="status" aria-live="polite"></div>
+
+  <section id="result" aria-label="Location details">
+    <h2 id="resultTitle"></h2>
+    <dl id="details"></dl>
+    <p class="note" id="note"></p>
+  </section>
+
+  <section id="summary" aria-label="Comparison">
+    <h2>On the map</h2>
+    <ul id="legend"></ul>
+    <ul id="distances"></ul>
+    <p class="note" id="compareNote"></p>
+    <div class="row share-actions">
+      <button id="copy" type="button" class="secondary">Copy share link</button>
+      <button id="gmaps" type="button" class="secondary">Open Google Maps</button>
+      <button id="wa" type="button" class="secondary">WhatsApp</button>
+    </div>
+  </section>
+</aside>
+
+<div id="map" aria-label="Map"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js" integrity="sha512-BwHfrr4c9kmRkLw6bXFdzcdWV/VCZkBPEVWhikgtBgZtKhhJPTTR+loes9hXdHtKAOtxgSgqdPo685Sp4Vg==" crossorigin=""></script>
+<script src="script.js"></script>
+</body>
+</html>
