@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Device locator</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" integrity="sha512-Zcn6gRop8P1W+1FvWv+7c1uQj6YfO2G3qgYfJ7TzFv3B9FfD8H/fH0jZ0H0wR7l5F9v3hV4F3Bv3GfO==" crossorigin="">
+<title>Device locator & Realtime Tracker</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -12,7 +12,26 @@
 <aside id="sidebar">
   <div class="sidebar-header">
     <h1>Device locator</h1>
-    <p class="sub">Locate a device by GPS, IP address or coordinates, and compare accuracy.</p>
+    <p class="sub">Locate devices by GPS, IP, or track a friend's device live.</p>
+  </div>
+
+  <!-- Realtime Friend Tracking Section -->
+  <div class="card" id="realtimeCard">
+    <h2>📡 Live Remote Tracking</h2>
+    <div id="trackerControls">
+      <button id="startSession" type="button">Track a friend's device</button>
+      <div id="sessionShareArea" style="display:none;">
+        <p class="hint">Send this link to your friend. Once they open it on their phone and tap "Share my GPS", their position appears live on your map:</p>
+        <div class="row">
+          <input id="sessionLinkInput" type="text" readonly>
+          <button id="copySessionBtn" type="button" class="secondary">Copy</button>
+        </div>
+        <div class="row" style="margin-top:6px;">
+          <button id="waSessionBtn" type="button" class="secondary">Send link via WhatsApp</button>
+        </div>
+        <div id="peerStatus" class="pulse-status">Waiting for friend to connect…</div>
+      </div>
+    </div>
   </div>
 
   <div class="row">
@@ -25,7 +44,7 @@
   <div class="field-group">
     <label for="query">IP address or coordinates</label>
     <input id="query" type="text" placeholder="e.g. 41.210.150.20 or -0.6072, 30.6545" autocomplete="off" spellcheck="false" aria-describedby="queryHint">
-    <p class="hint" id="queryHint">Leave empty for your current public IP. Supports decimals (-0.60, 30.65) or degrees (0°36'S 30°39'E), or click map to drop a pin.</p>
+    <p class="hint" id="queryHint">Leave empty for your current public IP. Supports decimals (-0.60, 30.65) or degrees, or click map to drop a pin.</p>
   </div>
 
   <div class="row">
@@ -47,7 +66,7 @@
     <ul id="distances"></ul>
     <p class="note" id="compareNote"></p>
     <div class="row share-actions">
-      <button id="copy" type="button" class="secondary">Copy share link</button>
+      <button id="copy" type="button" class="secondary">Copy pin link</button>
       <button id="gmaps" type="button" class="secondary">Open Google Maps</button>
       <button id="wa" type="button" class="secondary">WhatsApp</button>
     </div>
@@ -56,7 +75,10 @@
 
 <div id="map" aria-label="Map"></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js" integrity="sha512-BwHfrr4c9kmRkLw6bXFdzcdWV/VCZkBPEVWhikgtBgZtKhhJPTTR+loes9hXdHtKAOtxgSgqdPo685Sp4Vg==" crossorigin=""></script>
+<!-- PeerJS for 100% free serverless P2P WebRTC data transfer -->
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<!-- Leaflet Map JS with verified official SRI -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="script.js"></script>
 </body>
 </html>

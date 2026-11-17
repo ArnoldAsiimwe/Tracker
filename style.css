@@ -89,6 +89,26 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 #result, #summary {
   display: none; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 13px;
 }
+.card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.card h2 { margin: 0 0 4px; color: var(--accent-dark); font-size: .95rem; }
+.pulse-status {
+  font-size: .82rem;
+  color: var(--info);
+  padding: 6px 8px;
+  background: #edf4fc;
+  border-radius: 6px;
+  margin-top: 6px;
+  display: inline-block;
+  width: 100%;
+}
 dl { margin: 0; display: grid; grid-template-columns: 90px 1fr; gap: 6px 10px; font-size: .88rem; }
 dt { color: var(--muted); }
 dd { margin: 0; font-weight: 600; word-break: break-word; }

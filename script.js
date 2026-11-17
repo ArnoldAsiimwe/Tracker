@@ -1,5 +1,5 @@
 // ---------- Map setup (all free, no API keys) ----------
-const map = L.map('map', { zoomControl: false }).setView([-0.6072, 30.6545], 7); // Default center
+const map = L.map('map', { zoomControl: false }).setView([-0.6072, 30.6545], 7);
 L.control.zoom({ position: 'bottomright' }).addTo(map);
 L.control.scale({ position: 'bottomleft', imperial: false }).addTo(map);
 
@@ -14,23 +14,32 @@ const streets = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{y}/{x}.png'
   { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' });
 L.control.layers({ 'Satellite': satellite, 'Streets': streets }, null, { position: 'topright' }).addTo(map);
 
+// Invalidate size once DOM is loaded to ensure 100% full container fill
+setTimeout(() => map.invalidateSize(), 200);
+
 // ---------- State ----------
 const $ = id => document.getElementById(id);
-const COLORS = { ip: '#2f7de1', gps: '#ff7a1a', manual: '#2e9e5b' };
-const LABELS = { ip: 'IP location', gps: 'Device GPS', manual: 'Entered or pinned position' };
-const SHORT = { ip: 'IP', gps: 'GPS', manual: 'Pinned' };
+const COLORS = { ip: '#2f7de1', gps: '#ff7a1a', manual: '#2e9e5b', friend: '#e02424' };
+const LABELS = { ip: 'IP location', gps: 'Device GPS', manual: 'Entered/Pinned position', friend: 'Friend\'s Live Device' };
+const SHORT = { ip: 'IP', gps: 'GPS', manual: 'Pinned', friend: 'Friend' };
 const points = {};          // kind -> { marker, circle, lat, lng }
-let watchId = null, trail = null, gpsWarmupTimeout = null;
+let watchId = null, trail = null, friendTrail = null, gpsWarmupTimeout = null;
 const queryEl = $('query');
+
+// Realtime P2P WebRTC State
+let peer = null;
+let activeConnection = null;
+let isHost = false;
 
 const IP_NOTE = 'An IP address shows where your internet provider\'s network exchange is registered, not where the phone or person is. For true physical precision, use device GPS.';
 const GPS_NOTE = 'Precise position obtained from device GPS / hardware sensors with real-time accuracy margin.';
 const MANUAL_NOTE = 'Position you entered or pinned. Drag the pin to adjust it.';
+const FRIEND_NOTE = 'Live telemetric stream received directly from friend\'s device via WebRTC.';
 
 function setStatus(msg, type = '') {
   const el = $('status');
   el.textContent = msg || '';
-  el.className = type; // '', 'error', 'success', 'loading'
+  el.className = type;
 }
 
 function pinIcon(color) {
@@ -137,7 +146,7 @@ function refreshSummary() {
   });
 
   const dist = $('distances'); dist.innerHTML = '';
-  const pairs = [['ip', 'gps'], ['ip', 'manual'], ['gps', 'manual']];
+  const pairs = [['ip', 'gps'], ['ip', 'manual'], ['gps', 'manual'], ['gps', 'friend'], ['ip', 'friend']];
   pairs.forEach(([a, b]) => {
     if (points[a] && points[b]) {
       const li = document.createElement('li');
@@ -147,7 +156,9 @@ function refreshSummary() {
   });
 
   let msg = '';
-  if (points.ip && points.gps) {
+  if (points.friend && points.gps) {
+    msg = 'Tracking your friend live! Distance between you and your friend: ' + formatDistance(distanceKm(points.gps, points.friend)) + '.';
+  } else if (points.ip && points.gps) {
     const d = distanceKm(points.ip, points.gps);
     msg = d > 20
       ? 'The IP address points to your ISP network center, whereas GPS gives your exact physical location.'
@@ -162,7 +173,6 @@ const ipv6Re = /^[0-9a-f:]+$/i;
 
 function parseCoordinates(input) {
   let str = input.trim();
-  // Standard decimal: -0.6072, 30.6545 or 0.6072 S, 30.6545 E
   const cardinalMatch = str.match(/^(-?\d+(?:\.\d+)?)\s*([NSns])?\s*[,/ ]\s*(-?\d+(?:\.\d+)?)\s*([EWew])?$/);
   if (cardinalMatch) {
     let lat = parseFloat(cardinalMatch[1]);
@@ -171,7 +181,6 @@ function parseCoordinates(input) {
     if (cardinalMatch[4] && cardinalMatch[4].toUpperCase() === 'W' && lng > 0) lng = -lng;
     return { lat, lng };
   }
-  // Degrees, Minutes, Seconds: 0°36'26"S 30°39'16"E
   const dmsMatch = str.match(/(\d+)°(?:(\d+)'(?:(\d+(?:\.\d+)?)"?)?)?\s*([NSns])\s*[,/ ]\s*(\d+)°(?:(\d+)'(?:(\d+(?:\.\d+)?)"?)?)?\s*([EWew])/i);
   if (dmsMatch) {
     let lat = parseFloat(dmsMatch[1]) + (parseFloat(dmsMatch[2] || 0) / 60) + (parseFloat(dmsMatch[3] || 0) / 3600);
@@ -187,7 +196,6 @@ function isPrivateIp(ip) {
   const m = ip.match(ipv4Re);
   if (!m) return /^(fe80|fc|fd|::1)/i.test(ip);
   const a = +m[1], b = +m[2];
-  // 10.x, 127.x, 192.168.x, 172.16-31.x, 169.254.x, or CGNAT 100.64-127.x
   return a === 10 || a === 127 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) ||
          (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127) || a === 0;
 }
@@ -220,7 +228,6 @@ async function locateByIp(ip) {
 
   try {
     let lat, lng, city, region, country, isp;
-    // Primary provider: ipwho.is
     try {
       const res = await fetch('https://ipwho.is/' + encodeURIComponent(ip || ''));
       const d = await res.json();
@@ -229,7 +236,6 @@ async function locateByIp(ip) {
       city = d.city; region = d.region; country = d.country;
       isp = d.connection && (d.connection.isp || d.connection.org);
     } catch (err) {
-      // Fallback provider: freeipapi.com
       const resFallback = await fetch('https://freeipapi.com/api/json/' + encodeURIComponent(ip || ''));
       const fb = await resFallback.json();
       if (!fb.latitude) throw new Error('All IP services failed');
@@ -284,14 +290,10 @@ function locateByGps() {
     setStatus('Geolocation is not supported by this browser.', 'error');
     return;
   }
-  if (location.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(location.hostname)) {
-    setStatus('Notice: Mobile browsers block GPS on HTTP. Please host on HTTPS (e.g. GitHub Pages) for GPS to work on phones.', 'error');
-  }
 
   const gpsBtn = $('gps');
   const isFollowing = $('follow').checked;
 
-  // Toggle off if already running
   if (watchId !== null) {
     stopFollowing();
     setStatus('GPS tracking stopped.');
@@ -304,12 +306,7 @@ function locateByGps() {
   gpsBtn.textContent = isFollowing ? 'Stop live tracking' : 'Locking GPS…';
   setStatus('Contacting GPS & satellite sensors… allow permission if prompted.', 'loading');
 
-  // Extended options giving GPS hardware ample time to acquire satellite fixes
-  const opts = {
-    enableHighAccuracy: true,
-    timeout: 30000,           // 30 seconds to lock onto satellite satellites
-    maximumAge: 0             // Always fresh, never cached position
-  };
+  const opts = { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 };
 
   const onError = err => {
     stopFollowing();
@@ -335,6 +332,11 @@ function locateByGps() {
       if (!trail) trail = L.polyline([], { color: COLORS.gps, weight: 4 }).addTo(map);
       trail.addLatLng([lat, lng]);
 
+      // If we are actively broadcasting to a friend as sender:
+      if (activeConnection && activeConnection.open) {
+        activeConnection.send({ type: 'location', lat, lng, accuracy, timestamp: pos.timestamp, speed: pos.coords.speed });
+      }
+
       if (first) {
         map.setView([lat, lng], 17);
         first = false;
@@ -343,11 +345,7 @@ function locateByGps() {
     }, onError, opts);
 
   } else {
-    // SINGLE FIX with WARM-UP:
-    // Satellites can take several seconds to refine accuracy from 1000m -> 5m.
-    // We watch position for up to 6 seconds to grab the best refined fix!
     setStatus('Refining GPS satellite fix for highest precision…', 'loading');
-    
     let lastBestPos = null;
 
     watchId = navigator.geolocation.watchPosition(async pos => {
@@ -361,15 +359,18 @@ function locateByGps() {
         showDetails('gps', gpsRows(pos), GPS_NOTE);
       }
 
+      // If connected as sender, stream update
+      if (activeConnection && activeConnection.open) {
+        activeConnection.send({ type: 'location', lat, lng, accuracy, timestamp: pos.timestamp, speed: pos.coords.speed });
+      }
+
       setStatus(`Locking satellites (sample ${sampleCount}: ±${Math.round(accuracy)}m accuracy)…`, 'loading');
 
-      // If we achieved sub-15m accuracy, or after 4 samples, finalize
       if (accuracy <= 15 || sampleCount >= 4) {
         finishGpsCalibration(lastBestPos);
       }
     }, onError, opts);
 
-    // Hard ceiling for warm-up phase (7 seconds)
     gpsWarmupTimeout = setTimeout(() => {
       if (lastBestPos) finishGpsCalibration(lastBestPos);
     }, 7000);
@@ -384,17 +385,121 @@ async function finishGpsCalibration(pos) {
   map.setView([lat, lng], 17);
 
   let hint = accuracy > 1000
-    ? `Estimated position (±${Math.round(accuracy)}m). On a laptop without GPS hardware, Wi-Fi tri-angulation is used. Open on a phone for pinpoint GPS.`
+    ? `Estimated position (±${Math.round(accuracy)}m). On a laptop without GPS, Wi-Fi triangulation is used. Open on a phone for pinpoint GPS.`
     : `High-accuracy GPS lock acquired (±${Math.round(accuracy)} meters).`;
 
   setStatus(hint, 'success');
-
   const address = await reverseGeocode(lat, lng);
   showDetails('gps', gpsRows(pos, address), GPS_NOTE);
 }
 
+// ---------- Realtime PeerJS Tracking (Option B: WebRTC) ----------
+function initRealtimeHost() {
+  const code = 'trk_' + Math.random().toString(36).substring(2, 8);
+  peer = new Peer(code, { debug: 1 });
+
+  peer.on('open', id => {
+    isHost = true;
+    const base = location.href.split('?')[0].split('#')[0];
+    const link = `${base}?join=${id}`;
+    $('sessionLinkInput').value = link;
+    $('sessionShareArea').style.display = 'block';
+    $('startSession').style.display = 'none';
+    $('peerStatus').textContent = 'Waiting for your friend to open the link on their phone…';
+  });
+
+  peer.on('connection', conn => {
+    activeConnection = conn;
+    $('peerStatus').textContent = '✅ Friend connected! Receiving their live coordinates…';
+    $('peerStatus').style.background = '#eef7f4';
+    $('peerStatus').style.color = '#0d5a4d';
+
+    conn.on('data', async data => {
+      if (data.type === 'location') {
+        const { lat, lng, accuracy } = data;
+        plot('friend', lat, lng, Math.max(accuracy || 10, 8));
+        
+        if (!friendTrail) friendTrail = L.polyline([], { color: COLORS.friend, weight: 4 }).addTo(map);
+        friendTrail.addLatLng([lat, lng]);
+
+        const rows = [
+          ['Device', 'Friend\'s Phone (Live)'],
+          ['Accuracy', '± ' + Math.round(accuracy || 10) + ' m'],
+          ['Speed', data.speed != null ? (data.speed * 3.6).toFixed(1) + ' km/h' : 'Stationary / N/A'],
+          ['Last Updated', new Date().toLocaleTimeString()]
+        ];
+        showDetails('friend', rows, FRIEND_NOTE);
+        map.setView([lat, lng], 16);
+      }
+    });
+
+    conn.on('close', () => {
+      $('peerStatus').textContent = '⚠️ Friend disconnected.';
+      $('peerStatus').style.background = '#fdf1ed';
+      $('peerStatus').style.color = '#a4380f';
+    });
+  });
+
+  peer.on('error', err => {
+    $('peerStatus').textContent = 'Connection error: ' + err.message;
+  });
+}
+
+function initRealtimeClient(hostPeerId) {
+  const card = $('realtimeCard');
+  card.innerHTML = `
+    <h2>📱 Share Your Live Location</h2>
+    <p class="hint">A friend has requested to track this device. Tap the button below to start streaming your GPS position directly to their map:</p>
+    <button id="sendGpsBtn" type="button" style="background:#e02424;border-color:#b91c1c;">Start Sharing My GPS</button>
+    <div id="clientStatus" class="pulse-status">Connecting to tracking session…</div>
+  `;
+
+  peer = new Peer({ debug: 1 });
+
+  peer.on('open', () => {
+    const conn = peer.connect(hostPeerId, { reliable: true });
+    activeConnection = conn;
+
+    conn.on('open', () => {
+      $('clientStatus').textContent = 'Connected to friend! Tap "Start Sharing My GPS" above.';
+      $('clientStatus').style.background = '#eef7f4';
+      $('clientStatus').style.color = '#0d5a4d';
+
+      $('sendGpsBtn').addEventListener('click', () => {
+        $('sendGpsBtn').textContent = 'Broadcasting GPS live…';
+        $('sendGpsBtn').disabled = true;
+        $('follow').checked = true;
+        locateByGps();
+      });
+    });
+
+    conn.on('error', err => {
+      $('clientStatus').textContent = 'Could not connect to host: ' + err.message;
+    });
+  });
+}
+
+// Session buttons
+$('startSession').addEventListener('click', initRealtimeHost);
+
+$('copySessionBtn').addEventListener('click', async () => {
+  const link = $('sessionLinkInput').value;
+  try {
+    await navigator.clipboard.writeText(link);
+    setStatus('Tracking link copied! Send it to your friend.', 'success');
+  } catch (e) {
+    window.prompt('Copy this link and send to your friend:', link);
+  }
+});
+
+$('waSessionBtn').addEventListener('click', () => {
+  const link = $('sessionLinkInput').value;
+  const msg = encodeURIComponent(`Open this link on your phone and tap "Start Sharing My GPS" so I can track your location: ${link}`);
+  window.open('https://wa.me/?text=' + msg, '_blank');
+});
+
 // ---------- Share & External Map Handlers ----------
-function bestPoint() { return points.gps || points.manual || points.ip; }
+function bestPoint() { return points.friend || points.gps || points.manual || points.ip; }
 
 function shareUrl() {
   const p = bestPoint();
@@ -402,15 +507,13 @@ function shareUrl() {
   return base + '?lat=' + p.lat.toFixed(6) + '&lng=' + p.lng.toFixed(6);
 }
 
-const isLocalPage = ['localhost', '127.0.0.1', ''].includes(location.hostname);
-
 $('copy').addEventListener('click', async () => {
   const p = bestPoint();
   if (!p) { setStatus('No location to share yet. Locate someone or drop a pin first.', 'error'); return; }
   const url = shareUrl();
   try {
     await navigator.clipboard.writeText(url);
-    setStatus(isLocalPage ? 'Link copied! (Note: Localhost links only open on this computer; host online to share with friends).' : 'Link copied to clipboard!', 'success');
+    setStatus('Pin link copied to clipboard!', 'success');
   } catch (e) {
     window.prompt('Copy this link:', url);
   }
@@ -425,7 +528,6 @@ $('gmaps').addEventListener('click', () => {
 $('wa').addEventListener('click', () => {
   const p = bestPoint();
   if (!p) { setStatus('No location to share. Locate first.', 'error'); return; }
-  // Provide Google Maps link so friends can open it immediately anywhere even if not hosted yet!
   const gmapLink = `https://maps.google.com/?q=${p.lat.toFixed(6)},${p.lng.toFixed(6)}`;
   const text = encodeURIComponent(`Device Location: ${gmapLink}\nApp Viewer: ${shareUrl()}`);
   window.open('https://wa.me/?text=' + text, '_blank');
@@ -435,6 +537,7 @@ $('wa').addEventListener('click', () => {
 function clearAll() {
   stopFollowing();
   if (trail) { map.removeLayer(trail); trail = null; }
+  if (friendTrail) { map.removeLayer(friendTrail); friendTrail = null; }
   Object.keys(points).forEach(k => {
     map.removeLayer(points[k].marker); map.removeLayer(points[k].circle); delete points[k];
   });
@@ -448,19 +551,15 @@ function handleLocate() {
   if (!q) return locateByIp('');
 
   const coords = parseCoordinates(q);
-  if (coords) {
-    return setManual(coords.lat, coords.lng, 'Entered coordinates');
-  }
+  if (coords) return setManual(coords.lat, coords.lng, 'Entered coordinates');
   if (ipv4Re.test(q)) {
     if (!q.split('.').every(n => +n >= 0 && +n <= 255)) {
       return setStatus('Each octet of an IPv4 address must be between 0 and 255.', 'error');
     }
     return locateByIp(q);
   }
-  if (q.includes(':') && ipv6Re.test(q)) {
-    return locateByIp(q);
-  }
-  setStatus('Enter a valid IP address or coordinates (e.g. -0.6072, 30.6545 or 0°36\'S 30°39\'E).', 'error');
+  if (q.includes(':') && ipv6Re.test(q)) return locateByIp(q);
+  setStatus('Enter a valid IP address or coordinates.', 'error');
 }
 
 $('go').addEventListener('click', handleLocate);
@@ -480,9 +579,18 @@ map.on('click', async e => {
   setManual(e.latlng.lat, e.latlng.lng, 'Pinned on the map');
 });
 
-// ---------- Open a shared position link (?lat=..&lng=..) ----------
-(function openSharedPosition() {
+// ---------- URL Routing on Page Load ----------
+(function handleUrlParams() {
   const params = new URLSearchParams(location.search);
+  
+  // If user opened with a ?join=ID parameter, they are the friend streaming GPS
+  const joinId = params.get('join');
+  if (joinId) {
+    initRealtimeClient(joinId);
+    return;
+  }
+
+  // If opened with static lat/lng coordinates
   const lat = parseFloat(params.get('lat')), lng = parseFloat(params.get('lng'));
   if (!isNaN(lat) && !isNaN(lng)) {
     setManual(lat, lng, 'Shared link');
