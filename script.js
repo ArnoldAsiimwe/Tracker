@@ -26,15 +26,15 @@ const points = {};          // kind -> { marker, circle, lat, lng }
 let watchId = null, trail = null, friendTrail = null, gpsWarmupTimeout = null;
 const queryEl = $('query');
 
-// Realtime P2P WebRTC State
-let peer = null;
-let activeConnection = null;
-let isHost = false;
+// Realtime Relay (HTTPS/SSE) State
+let eventSource = null;
+let currentTrackingChannel = null;
+let isBroadcasting = false;
 
 const IP_NOTE = 'An IP address shows where your internet provider\'s network exchange is registered, not where the phone or person is. For true physical precision, use device GPS.';
 const GPS_NOTE = 'Precise position obtained from device GPS / hardware sensors with real-time accuracy margin.';
 const MANUAL_NOTE = 'Position you entered or pinned. Drag the pin to adjust it.';
-const FRIEND_NOTE = 'Live telemetric stream received directly from friend\'s device via WebRTC.';
+const FRIEND_NOTE = 'Live telemetric stream received directly from friend\'s device via Cloud Relay.';
 
 function setStatus(msg, type = '') {
   const el = $('status');
@@ -280,9 +280,31 @@ function stopFollowing() {
     gpsWarmupTimeout = null;
   }
   const gpsBtn = $('gps');
-  gpsBtn.disabled = false;
-  gpsBtn.classList.remove('btn-active');
-  gpsBtn.textContent = 'Use my GPS';
+  if (gpsBtn) {
+    gpsBtn.disabled = false;
+    gpsBtn.classList.remove('btn-active');
+    gpsBtn.textContent = 'Use my GPS';
+  }
+}
+
+// Function to broadcast location to the tracking channel
+async function broadcastLocation(lat, lng, accuracy, speed) {
+  if (!currentTrackingChannel) return;
+  try {
+    await fetch(`https://ntfy.sh/${currentTrackingChannel}`, {
+      method: 'POST',
+      body: JSON.stringify({
+        type: 'location',
+        lat,
+        lng,
+        accuracy,
+        speed,
+        timestamp: Date.now()
+      })
+    });
+  } catch (err) {
+    console.error('Relay broadcast error:', err);
+  }
 }
 
 function locateByGps() {
@@ -294,7 +316,7 @@ function locateByGps() {
   const gpsBtn = $('gps');
   const isFollowing = $('follow').checked;
 
-  if (watchId !== null) {
+  if (watchId !== null && !isBroadcasting) {
     stopFollowing();
     setStatus('GPS tracking stopped.');
     return;
@@ -302,8 +324,10 @@ function locateByGps() {
 
   if (trail) { map.removeLayer(trail); trail = null; }
 
-  gpsBtn.classList.add('btn-active');
-  gpsBtn.textContent = isFollowing ? 'Stop live tracking' : 'Locking GPS…';
+  if (gpsBtn) {
+    gpsBtn.classList.add('btn-active');
+    gpsBtn.textContent = isFollowing ? 'Stop live tracking' : 'Locking GPS…';
+  }
   setStatus('Contacting GPS & satellite sensors… allow permission if prompted.', 'loading');
 
   const opts = { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 };
@@ -332,9 +356,9 @@ function locateByGps() {
       if (!trail) trail = L.polyline([], { color: COLORS.gps, weight: 4 }).addTo(map);
       trail.addLatLng([lat, lng]);
 
-      // If we are actively broadcasting to a friend as sender:
-      if (activeConnection && activeConnection.open) {
-        activeConnection.send({ type: 'location', lat, lng, accuracy, timestamp: pos.timestamp, speed: pos.coords.speed });
+      // Broadcast to cloud relay if actively tracking
+      if (currentTrackingChannel) {
+        broadcastLocation(lat, lng, accuracy, pos.coords.speed);
       }
 
       if (first) {
@@ -359,9 +383,9 @@ function locateByGps() {
         showDetails('gps', gpsRows(pos), GPS_NOTE);
       }
 
-      // If connected as sender, stream update
-      if (activeConnection && activeConnection.open) {
-        activeConnection.send({ type: 'location', lat, lng, accuracy, timestamp: pos.timestamp, speed: pos.coords.speed });
+      // Broadcast update
+      if (currentTrackingChannel) {
+        broadcastLocation(lat, lng, accuracy, pos.coords.speed);
       }
 
       setStatus(`Locking satellites (sample ${sampleCount}: ±${Math.round(accuracy)}m accuracy)…`, 'loading');
@@ -378,7 +402,7 @@ function locateByGps() {
 }
 
 async function finishGpsCalibration(pos) {
-  stopFollowing();
+  if (!isBroadcasting) stopFollowing();
   if (!pos) return;
   const { latitude: lat, longitude: lng, accuracy } = pos.coords;
   plot('gps', lat, lng, Math.max(accuracy, 8));
@@ -393,89 +417,96 @@ async function finishGpsCalibration(pos) {
   showDetails('gps', gpsRows(pos, address), GPS_NOTE);
 }
 
-// ---------- Realtime PeerJS Tracking (Option B: WebRTC) ----------
+// ---------- High-Reliability Cloud HTTPS/SSE Relay (Option 2) ----------
 function initRealtimeHost() {
-  const code = 'trk_' + Math.random().toString(36).substring(2, 8);
-  peer = new Peer(code, { debug: 1 });
+  // Generate a distinct channel topic
+  const channel = 'tracker_' + Math.random().toString(36).substring(2, 10);
+  currentTrackingChannel = channel;
 
-  peer.on('open', id => {
-    isHost = true;
-    const base = location.href.split('?')[0].split('#')[0];
-    const link = `${base}?join=${id}`;
-    $('sessionLinkInput').value = link;
-    $('sessionShareArea').style.display = 'block';
-    $('startSession').style.display = 'none';
-    $('peerStatus').textContent = 'Waiting for your friend to open the link on their phone…';
-  });
+  const base = location.href.split('?')[0].split('#')[0];
+  const link = `${base}?join=${channel}`;
+  $('sessionLinkInput').value = link;
+  $('sessionShareArea').style.display = 'block';
+  $('startSession').style.display = 'none';
+  $('peerStatus').textContent = 'Waiting for your friend to open the link on their phone…';
 
-  peer.on('connection', conn => {
-    activeConnection = conn;
-    $('peerStatus').textContent = '✅ Friend connected! Receiving their live coordinates…';
-    $('peerStatus').style.background = '#eef7f4';
-    $('peerStatus').style.color = '#0d5a4d';
+  // Close previous stream if open
+  if (eventSource) eventSource.close();
 
-    conn.on('data', async data => {
+  // Connect to SSE stream
+  eventSource = new EventSource(`https://ntfy.sh/${channel}/sse`);
+
+  eventSource.onopen = () => {
+    $('peerStatus').textContent = '📡 Tracking channel live. Send the link to your friend!';
+  };
+
+  eventSource.onmessage = async event => {
+    try {
+      const envelope = JSON.parse(event.data);
+      if (envelope.event !== 'message' || !envelope.message) return;
+      
+      const data = JSON.parse(envelope.message);
       if (data.type === 'location') {
         const { lat, lng, accuracy } = data;
+
+        // Auto reload/update map with Friend's pin!
         plot('friend', lat, lng, Math.max(accuracy || 10, 8));
-        
+
         if (!friendTrail) friendTrail = L.polyline([], { color: COLORS.friend, weight: 4 }).addTo(map);
         friendTrail.addLatLng([lat, lng]);
 
+        $('peerStatus').textContent = `✅ Live friend position received! (Accuracy: ±${Math.round(accuracy || 10)}m)`;
+        $('peerStatus').style.background = '#eef7f4';
+        $('peerStatus').style.color = '#0d5a4d';
+
         const rows = [
-          ['Device', 'Friend\'s Phone (Live)'],
+          ['Device', 'Friend\'s Live Phone'],
           ['Accuracy', '± ' + Math.round(accuracy || 10) + ' m'],
           ['Speed', data.speed != null ? (data.speed * 3.6).toFixed(1) + ' km/h' : 'Stationary / N/A'],
-          ['Last Updated', new Date().toLocaleTimeString()]
+          ['Last Update', new Date(data.timestamp || Date.now()).toLocaleTimeString()]
         ];
         showDetails('friend', rows, FRIEND_NOTE);
+
+        // Center map to friend's position
         map.setView([lat, lng], 16);
       }
-    });
+    } catch (e) {
+      console.log('Ignored non-json ping:', e);
+    }
+  };
 
-    conn.on('close', () => {
-      $('peerStatus').textContent = '⚠️ Friend disconnected.';
-      $('peerStatus').style.background = '#fdf1ed';
-      $('peerStatus').style.color = '#a4380f';
-    });
-  });
-
-  peer.on('error', err => {
-    $('peerStatus').textContent = 'Connection error: ' + err.message;
-  });
+  eventSource.onerror = () => {
+    $('peerStatus').textContent = 'Reconnecting to cloud relay…';
+  };
 }
 
-function initRealtimeClient(hostPeerId) {
+function initRealtimeClient(channelId) {
+  currentTrackingChannel = channelId;
+  isBroadcasting = true;
+
   const card = $('realtimeCard');
   card.innerHTML = `
     <h2>📱 Share Your Live Location</h2>
-    <p class="hint">A friend has requested to track this device. Tap the button below to start streaming your GPS position directly to their map:</p>
-    <button id="sendGpsBtn" type="button" style="background:#e02424;border-color:#b91c1c;">Start Sharing My GPS</button>
-    <div id="clientStatus" class="pulse-status">Connecting to tracking session…</div>
+    <p class="hint">A friend has requested to track this device. Tap the button below to stream your satellite GPS position directly to their map:</p>
+    <button id="sendGpsBtn" type="button" style="background:#e02424;border-color:#b91c1c;padding:12px;">Start Sharing My GPS</button>
+    <div id="clientStatus" class="pulse-status" style="margin-top:8px;">Ready to stream location.</div>
   `;
 
-  peer = new Peer({ debug: 1 });
+  // Pre-load map immediately
+  setTimeout(() => map.invalidateSize(), 300);
 
-  peer.on('open', () => {
-    const conn = peer.connect(hostPeerId, { reliable: true });
-    activeConnection = conn;
+  const sendBtn = $('sendGpsBtn');
+  sendBtn.addEventListener('click', () => {
+    sendBtn.textContent = 'Broadcasting GPS live…';
+    sendBtn.disabled = true;
+    sendBtn.style.opacity = '0.85';
+    $('follow').checked = true;
 
-    conn.on('open', () => {
-      $('clientStatus').textContent = 'Connected to friend! Tap "Start Sharing My GPS" above.';
-      $('clientStatus').style.background = '#eef7f4';
-      $('clientStatus').style.color = '#0d5a4d';
+    $('clientStatus').textContent = 'Acquiring GPS fix and broadcasting to your friend…';
+    $('clientStatus').style.background = '#eef7f4';
+    $('clientStatus').style.color = '#0d5a4d';
 
-      $('sendGpsBtn').addEventListener('click', () => {
-        $('sendGpsBtn').textContent = 'Broadcasting GPS live…';
-        $('sendGpsBtn').disabled = true;
-        $('follow').checked = true;
-        locateByGps();
-      });
-    });
-
-    conn.on('error', err => {
-      $('clientStatus').textContent = 'Could not connect to host: ' + err.message;
-    });
+    locateByGps();
   });
 }
 
@@ -568,7 +599,7 @@ $('clear').addEventListener('click', clearAll);
 queryEl.addEventListener('keydown', e => { if (e.key === 'Enter') handleLocate(); });
 
 $('follow').addEventListener('change', e => {
-  if (!e.target.checked && watchId !== null) {
+  if (!e.target.checked && watchId !== null && !isBroadcasting) {
     stopFollowing();
     setStatus('Live tracking paused.');
   }
@@ -583,10 +614,10 @@ map.on('click', async e => {
 (function handleUrlParams() {
   const params = new URLSearchParams(location.search);
   
-  // If user opened with a ?join=ID parameter, they are the friend streaming GPS
-  const joinId = params.get('join');
-  if (joinId) {
-    initRealtimeClient(joinId);
+  // If user opened with a ?join=CHANNEL parameter, they are the friend streaming GPS
+  const joinChannel = params.get('join');
+  if (joinChannel) {
+    initRealtimeClient(joinChannel);
     return;
   }
 
